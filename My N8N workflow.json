@@ -1,0 +1,123 @@
+{
+  "name": "My workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "1408fe67-b992-4bad-9663-36b7a67b4067",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        -848
+      ],
+      "id": "cafb1aca-68dc-4dfd-a432-67404ee1c3a2",
+      "name": "Webhook",
+      "webhookId": "1408fe67-b992-4bad-9663-36b7a67b4067"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.body.action }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        224,
+        -848
+      ],
+      "id": "dbf32492-153e-4cd4-bea7-d7226cfbe6ec",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": "qwen/qwen3-32b",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        304,
+        -624
+      ],
+      "id": "6177b29c-c79d-4428-86f7-3308473a209d",
+      "name": "Groq Chat Model",
+      "credentials": {
+        "groqApi": {
+          "id": "F8BpIsdIiJVXR1Fy",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "allIncomingItems",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        576,
+        -848
+      ],
+      "id": "6d32ba6f-dfe4-4d74-b560-b2976c168ffb",
+      "name": "Respond to Webhook"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "425dd975-852c-4968-9b24-d17c793319d7",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "94ae7dca0183785bfb35a36a776a0da01e4ff1ac9256a6f955c49de46d473e18"
+  },
+  "nodeGroups": [],
+  "id": "g710epe8Jt84qVcK",
+  "tags": []
+}
