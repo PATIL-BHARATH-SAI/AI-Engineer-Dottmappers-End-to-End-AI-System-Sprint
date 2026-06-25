@@ -1,297 +1,239 @@
-from __future__ import annotations
-
-from pathlib import Path
-from typing import Any
-
-import pandas as pd
-import requests
 import streamlit as st
+import requests
+import pandas as pd
+import json
 
-
-APP_DIR = Path(__file__).resolve().parent
-DATA_FILE = APP_DIR / "support_tickets (2).xlsx"
-EXPECTED_COLUMNS = {
-    "ticket_id",
-    "created_at",
-    "category",
-    "priority",
-    "status",
-    "response_time_hrs",
-    "resolution_time_hrs",
-    "agent_id",
-    "customer_rating",
-    "issue_summary",
-}
-REQUEST_TIMEOUT_SECONDS = 45
-
-
+# Page Config
 st.set_page_config(
-    page_title="DOTMappers Support AI",
-    page_icon=":material/support_agent:",
+    page_title="AI Support Intelligence Dashboard",
+    page_icon="🎫",
     layout="wide",
+    initial_sidebar_state="expanded"
 )
 
+# Custom Styling (Premium Gradients and micro-animations)
+st.markdown("""
+    <style>
+    .main {
+        background-color: #0f111a;
+        color: #e2e8f0;
+    }
+    .stMetric {
+        background: linear-gradient(135deg, #1e1b4b 0%, #311042 100%);
+        border: 1px solid #4c1d95;
+        border-radius: 12px;
+        padding: 15px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        transition: transform 0.2s;
+    }
+    .stMetric:hover {
+        transform: translateY(-3px);
+        border-color: #a855f7;
+    }
+    h1, h2, h3 {
+        font-family: 'Outfit', sans-serif;
+        font-weight: 700;
+        background: linear-gradient(to right, #a855f7, #6366f1);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+    .card {
+        background-color: #1e293b;
+        border-radius: 10px;
+        padding: 20px;
+        margin-bottom: 15px;
+        border-left: 5px solid #6366f1;
+    }
+    .anomaly-card {
+        background-color: #1e1b1b;
+        border-radius: 10px;
+        padding: 20px;
+        margin-bottom: 15px;
+        border-left: 5px solid #ef4444;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-def get_webhook_url() -> str:
+# Sidebar Configuration
+st.sidebar.title("⚙️ Connection Settings")
+n8n_query_url = st.sidebar.text_input(
+    "N8N Query Webhook URL",
+    value=st.secrets.get("N8N_WEBHOOK_QUERY_URL", "https://saipatil1666.app.n8n.cloud/webhook/query")
+)
+n8n_anomalies_url = st.sidebar.text_input(
+    "N8N Anomalies Webhook URL",
+    value=st.secrets.get("N8N_WEBHOOK_ANOMALIES_URL", "https://saipatil1666.app.n8n.cloud/webhook/anomalies")
+)
+n8n_health_url = st.sidebar.text_input(
+    "N8N Health Webhook URL",
+    value=st.secrets.get("N8N_WEBHOOK_HEALTH_URL", "https://saipatil1666.app.n8n.cloud/webhook/health")
+)
+
+st.sidebar.info("💡 Ensure your n8n workflow is Active and Webhook triggers are live.")
+
+# App Header
+st.title("🎫 AI Support Intelligence Dashboard")
+st.subheader("DOTMappers Customer Support Insights Portal")
+
+# Load Tickets Data
+@st.cache_data
+def load_tickets_data():
     try:
-        return str(st.secrets.get("N8N_WEBHOOK_URL", "")).strip()
-    except (FileNotFoundError, KeyError):
-        return ""
+        # Load from support_tickets (2).xlsx
+        df = pd.read_excel("support_tickets (2).xlsx")
+        # Ensure correct string formatting of datetime
+        df['created_at'] = pd.to_datetime(df['created_at']).dt.strftime('%Y-%m-%d %H:%M')
+        # Replace NaN/nulls with None so they serialize cleanly to JSON
+        df = df.astype(object).where(pd.notnull(df), None)
+        return df.to_dict(orient='records')
+    except Exception as e:
+        st.error(f"Error loading Excel file: {e}")
+        return []
 
+tickets_data = load_tickets_data()
 
-@st.cache_data(show_spinner=False)
-def load_data(path: Path) -> pd.DataFrame:
-    frame = pd.read_excel(path, engine="openpyxl")
-    missing = EXPECTED_COLUMNS.difference(frame.columns)
-    if missing:
-        raise ValueError(f"Dataset is missing columns: {', '.join(sorted(missing))}")
-
-    frame = frame.copy()
-    frame["created_at"] = pd.to_datetime(frame["created_at"], errors="coerce")
-    if frame["created_at"].isna().any():
-        raise ValueError("One or more created_at values are invalid.")
-    return frame
-
-
-def records_for_api(frame: pd.DataFrame) -> list[dict[str, Any]]:
-    clean = frame.copy()
-    clean["created_at"] = clean["created_at"].dt.strftime("%Y-%m-%dT%H:%M:%S")
-    clean = clean.astype(object).where(pd.notna(clean), None)
-    return clean.to_dict(orient="records")
-
-
-def call_n8n(
-    action: str,
-    *,
-    frame: pd.DataFrame | None = None,
-    question: str | None = None,
-) -> dict[str, Any]:
-    webhook_url = get_webhook_url()
-    if not webhook_url:
-        raise RuntimeError(
-            "n8n is not configured. Create .streamlit/secrets.toml and add "
-            'N8N_WEBHOOK_URL = "https://saipatil1666.app.n8n.cloud/webhook/1408fe67-b992-4bad-9663-36b7a67b4067"'
-        )
-
-    payload: dict[str, Any] = {"action": action}
-    if frame is not None:
-        payload["reference_date"] = frame["created_at"].max().isoformat()
-        payload["tickets"] = records_for_api(frame)
-    if question is not None:
-        payload["question"] = question
-
+# Fetch Anomaly Data for use in overview and tab2
+@st.cache_data(ttl=10)
+def fetch_anomalies(webhook_url):
     try:
-        response = requests.post(
-            webhook_url,
-            json=payload,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-    except requests.Timeout as exc:
-        raise RuntimeError(
-            f"n8n did not respond within {REQUEST_TIMEOUT_SECONDS} seconds."
-        ) from exc
-    except requests.ConnectionError as exc:
-        raise RuntimeError("Could not connect to the configured n8n webhook.") from exc
-    except requests.HTTPError as exc:
-        detail = response.text[:300].strip()
-        raise RuntimeError(
-            f"n8n returned HTTP {response.status_code}: {detail or 'No details'}"
-        ) from exc
-
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise RuntimeError("n8n returned a response that was not valid JSON.") from exc
-
-    if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
-        data = data[0]
-    if not isinstance(data, dict):
-        raise RuntimeError("n8n returned an unexpected response shape.")
-    if data.get("ok") is False:
-        raise RuntimeError(str(data.get("error", "The n8n workflow failed.")))
-    return data
-
-
-@st.cache_data(ttl=60, show_spinner=False)
-def check_n8n_connection(webhook_url: str) -> tuple[bool, str]:
-    if not webhook_url:
-        return False, "Not configured"
-    try:
-        result = call_n8n("health")
-        return bool(result.get("ok")), str(result.get("message", "Connected"))
-    except RuntimeError as exc:
-        return False, str(exc)
-
-
-def render_result(result: dict[str, Any]) -> None:
-    answer = result.get("answer")
-    rows = result.get("rows", [])
-    summary = result.get("summary")
-
-    if answer is not None:
-        st.success("Analysis complete")
-        if isinstance(answer, (int, float)):
-            st.metric("Answer", answer)
+        res = requests.post(webhook_url, timeout=30)
+        if res.status_code == 200:
+            try:
+                data = res.json()
+            except ValueError:
+                st.error("Invalid JSON received from n8n.")
+                return []
+            
+            if isinstance(data, list):
+                if len(data) > 0:
+                    data = data[0]
+                else:
+                    return []
+            
+            if isinstance(data, dict):
+                if "message" in data and "anomalies" not in data:
+                    st.warning(f"n8n webhook message: {data['message']}")
+                    return []
+                return data.get("anomalies", [])
+            return []
         else:
-            st.markdown(f"**Answer:** {answer}")
+            st.error(f"n8n returned status code {res.status_code}: {res.text}")
+    except Exception as e:
+        st.error(f"Error connecting to n8n anomalies webhook: {e}")
+    return []
 
-    if summary:
-        st.caption(str(summary))
+anomalies = fetch_anomalies(n8n_anomalies_url)
 
-    if isinstance(rows, list) and rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    elif answer is None:
-        st.info("The workflow completed but returned no matching records.")
+# Tabs
+tab1, tab2, tab3 = st.tabs(["📊 Analytics Overview", "🚨 Anomaly Monitor", "💬 AI Chat Assistant"])
 
-
-def render_anomaly_section(
-    title: str,
-    description: str,
-    rows: Any,
-) -> None:
-    records = rows if isinstance(rows, list) else []
-    st.subheader(f"{title} ({len(records)})")
-    st.caption(description)
-    if records:
-        st.dataframe(pd.DataFrame(records), use_container_width=True, hide_index=True)
+with tab1:
+    st.markdown("### Key Operational Metrics")
+    
+    # Calculate metrics dynamically
+    total_tickets = len(tickets_data)
+    
+    # Average rating calculation
+    ratings = [t['customer_rating'] for t in tickets_data if t['customer_rating'] is not None]
+    avg_rating = sum(ratings) / len(ratings) if ratings else 0.0
+    
+    # Unresolved tickets (Open or Escalated)
+    unresolved_tickets = len([t for t in tickets_data if t['status'] in ['Open', 'Escalated']])
+    
+    # Grid columns
+    col1, col2, col3, col4 = st.columns(4)
+    
+    col1.metric("Total Ingested Tickets", str(total_tickets), help="Total records loaded into n8n Python engine")
+    col2.metric("Average Customer Rating", f"{avg_rating:.2f} / 5.0" if avg_rating else "N/A", help="Average customer satisfaction score")
+    col3.metric("Unresolved Tickets", str(unresolved_tickets), help="Tickets with status Open or Escalated")
+    col4.metric("Flagged Anomalies", str(len(anomalies)), delta_color="inverse")
+    
+    st.markdown("---")
+    
+    st.markdown("### Ticket Category Distribution")
+    if tickets_data:
+        df_tickets = pd.DataFrame(tickets_data)
+        cat_counts = df_tickets['category'].value_counts().reset_index()
+        cat_counts.columns = ['Category', 'Tickets']
+        st.bar_chart(cat_counts.set_index("Category"))
     else:
-        st.info("No matching anomalies were found.")
+        st.write("No ticket data available.")
 
-
-st.title("AI Support Ticket Intelligence")
-st.caption("Local Streamlit dashboard with Groq-powered analysis orchestrated by n8n")
-
-if not DATA_FILE.exists():
-    st.error(f"Dataset not found: {DATA_FILE.name}")
-    st.stop()
-
-try:
-    df = load_data(DATA_FILE)
-except (ValueError, OSError) as exc:
-    st.error(f"Could not load the ticket dataset: {exc}")
-    st.stop()
-
-reference_date = df["created_at"].max()
-webhook_url = get_webhook_url()
-connected, connection_message = check_n8n_connection(webhook_url)
-
-with st.sidebar:
-    st.header("System status")
-    if connected:
-        st.success(f"n8n: {connection_message}")
-    elif webhook_url:
-        st.error("n8n: Connection failed")
-        st.caption(connection_message)
+with tab2:
+    st.markdown("### Flagged SLA Violations & Anomalies")
+    st.write("Below are tickets flagged by the n8n Python engine for exceeding response times or SLA breaches:")
+    
+    if not anomalies:
+        st.success("🎉 No active anomalies or SLA breaches detected!")
     else:
-        st.warning("n8n: Not configured")
-        st.code(
-            'N8N_WEBHOOK_URL = "https://your-instance.app.n8n.cloud/'
-            'webhook/support-ai"',
-            language="toml",
-        )
-
-    st.divider()
-    st.write(f"Dataset: `{DATA_FILE.name}`")
-    st.write(f"Rows: **{len(df):,}**")
-    st.write(f"Reference date: **{reference_date:%Y-%m-%d}**")
-    st.caption(
-        "Relative questions such as 'this month' use the latest date in the dataset."
-    )
-    if st.button("Refresh connection"):
-        check_n8n_connection.clear()
-        st.rerun()
-
-overview_tab, query_tab, anomaly_tab = st.tabs(
-    ["Overview", "Natural Language Query", "Anomaly Detection"]
-)
-
-with overview_tab:
-    open_count = int(df["status"].eq("Open").sum())
-    unresolved_count = int(df["status"].ne("Resolved").sum())
-    critical_unresolved = int(
-        (df["priority"].eq("Critical") & df["status"].ne("Resolved")).sum()
-    )
-    average_rating = df["customer_rating"].mean()
-
-    metric_columns = st.columns(4)
-    metric_columns[0].metric("Total tickets", f"{len(df):,}")
-    metric_columns[1].metric("Open tickets", open_count)
-    metric_columns[2].metric("Unresolved critical", critical_unresolved)
-    metric_columns[3].metric(
-        "Average rating",
-        f"{average_rating:.2f}" if pd.notna(average_rating) else "N/A",
-    )
-
-    chart_columns = st.columns(2)
-    with chart_columns[0]:
-        st.subheader("Tickets by status")
-        st.bar_chart(df["status"].value_counts())
-    with chart_columns[1]:
-        st.subheader("Tickets by priority")
-        priority_order = ["Critical", "High", "Medium", "Low"]
-        priority_counts = df["priority"].value_counts().reindex(priority_order).fillna(0)
-        st.bar_chart(priority_counts)
-
-    st.subheader("Ticket data")
-    st.dataframe(df, use_container_width=True, hide_index=True)
-    st.caption(f"Total unresolved tickets: {unresolved_count}")
-
-with query_tab:
-    st.subheader("Ask the ticket data")
-    st.write(
-        "Groq converts your question into a restricted query plan. "
-        "n8n validates and executes that plan without Python eval."
-    )
-    question = st.text_input(
-        "Question",
-        placeholder="Which agent has the lowest average customer rating?",
-    )
-    with st.expander("Example questions"):
-        st.markdown(
-            """
-- How many tickets are currently open?
-- Which agent has the lowest average customer rating?
-- Which agent resolved the most tickets this month?
-- Show all Critical tickets not resolved within 12 hours.
-- What is the average customer rating for Technical tickets?
-"""
-        )
-
-    if st.button("Run query", type="primary", disabled=not question.strip()):
-        with st.spinner("n8n and Groq are analyzing the ticket data..."):
-            try:
-                query_result = call_n8n("query", frame=df, question=question.strip())
-                render_result(query_result)
-                with st.expander("Validated query plan"):
-                    st.json(query_result.get("plan", {}))
-            except RuntimeError as exc:
-                st.error(str(exc))
-
-with anomaly_tab:
-    st.subheader("Operational anomalies")
-    st.write(
-        "Detect unresolved High/Critical tickets older than 24 hours and unusually "
-        "long resolved tickets using the mean plus two standard deviations."
-    )
-
-    if st.button("Detect anomalies", type="primary"):
-        with st.spinner("n8n is running deterministic anomaly checks..."):
-            try:
-                anomaly_result = call_n8n("anomalies", frame=df)
-                threshold = anomaly_result.get("resolution_threshold_hrs")
-                if threshold is not None:
-                    st.metric("Resolution outlier threshold", f"{threshold:.2f} hours")
-
-                render_anomaly_section(
-                    "SLA breaches",
-                    "Unresolved High/Critical tickets older than 24 hours.",
-                    anomaly_result.get("sla_breaches"),
+        for idx, item in enumerate(anomalies):
+            with st.container():
+                st.markdown(
+                    f"""
+                    <div class="anomaly-card">
+                        <h4>Ticket: {item['ticket_id']} | Priority: <span style="color:#ef4444">{item['priority']}</span></h4>
+                        <p><strong>Reason:</strong> {item['reason']}</p>
+                        <p><strong>Summary:</strong> {item['issue_summary']}</p>
+                        <p><strong>Agent:</strong> {item['agent_id']} | <strong>Status:</strong> {item['status']} | <strong>Created:</strong> {item['created_at']}</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
                 )
-                render_anomaly_section(
-                    "Resolution outliers",
-                    "Resolved tickets above mean + 2 standard deviations.",
-                    anomaly_result.get("resolution_outliers"),
-                )
-            except RuntimeError as exc:
-                st.error(str(exc))
+
+with tab3:
+    st.markdown("### Query the Tickets Database")
+    st.write("Ask natural language questions about the support tickets (e.g., 'How many billing tickets are open?' or 'Which agent has the lowest average customer rating?')")
+    
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if prompt := st.chat_input("Enter your question here..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+            
+        with st.chat_message("assistant"):
+            with st.spinner("AI Agent is analyzing the dataset..."):
+                try:
+                    payload = {"question": prompt}
+                    res = requests.post(n8n_query_url, json=payload, timeout=30)
+                    if res.status_code == 200:
+                        try:
+                            data = res.json()
+                        except ValueError:
+                            data = {}
+                        
+                        # Robust parsing of response
+                        ans = ""
+                        if isinstance(data, str):
+                            try:
+                                data = json.loads(data)
+                            except Exception:
+                                ans = data
+                        
+                        if not ans:
+                            if isinstance(data, list):
+                                if len(data) > 0:
+                                    data = data[0]
+                                else:
+                                    data = {}
+                            
+                            if isinstance(data, dict):
+                                ans = data.get("answer", data.get("output", data.get("message", "Sorry, I received an empty response from n8n.")))
+                            else:
+                                ans = str(data)
+                            
+                        st.markdown(ans)
+                        st.session_state.messages.append({"role": "assistant", "content": ans})
+                    else:
+                        error_msg = f"Error: n8n returned status code {res.status_code}. Details: {res.text}"
+                        st.error(error_msg)
+                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                except Exception as e:
+                    error_msg = f"Failed to connect to n8n: {e}"
+                    st.error(error_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
